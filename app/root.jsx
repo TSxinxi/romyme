@@ -1,44 +1,44 @@
-import {useNonce} from '@shopify/hydrogen';
-import {defer} from '@shopify/remix-oxygen';
+import { defer } from '@shopify/remix-oxygen';
+import { useEffect } from 'react';
 import {
   Links,
   Meta,
   Outlet,
   Scripts,
-  LiveReload,
-  useMatches,
-  useRouteError,
-  useLoaderData,
   ScrollRestoration,
-  isRouteErrorResponse,
+  useCatch,
+  useLoaderData,
+  useMatches,
 } from '@remix-run/react';
+import { ShopifySalesChannel, Seo } from '@shopify/hydrogen';
+import { Layout } from '~/components';
+import { GenericError } from './components/GenericError';
+import { NotFound } from './components/NotFound';
+
+import styles from './styles/app.css';
 import favicon from '../public/favicon.svg';
-import resetStyles from './styles/reset.css';
-import appStyles from './styles/app.css';
-import {Layout} from '~/components/Layout';
 
-/**
- * This is important to avoid re-fetching root queries on sub-navigations
- * @type {ShouldRevalidateFunction}
- */
-export const shouldRevalidate = ({formMethod, currentUrl, nextUrl}) => {
-  // revalidate when a mutation is performed e.g add to cart, login...
-  if (formMethod && formMethod !== 'GET') {
-    return true;
-  }
+import { DEFAULT_LOCALE, parseMenu } from './lib/utils';
+import { getDirection } from '~/lib/P_Variable';
+import invariant from 'tiny-invariant';
+import { useAnalytics } from './hooks/useAnalytics';
+import * as Sentry from "@sentry/react";
 
-  // revalidate when manually revalidating via useRevalidator
-  if (currentUrl.toString() === nextUrl.toString()) {
-    return true;
-  }
+const seo = ({ data, pathname }) => ({
+  title: data?.layout?.shop?.name,
+  titleTemplate: '%s | Hydrogen Demo Store',
+  description: data?.layout?.shop?.description,
+  handle: '@shopify',
+  url: `https://hydrogen.shop${pathname}`,
+});
 
-  return false;
+export const handle = {
+  seo,
 };
 
-export function links() {
+export const links = () => {
   return [
-    {rel: 'stylesheet', href: resetStyles},
-    {rel: 'stylesheet', href: appStyles},
+    { rel: 'stylesheet', href: styles },
     {
       rel: 'preconnect',
       href: 'https://cdn.shopify.com',
@@ -47,166 +47,224 @@ export function links() {
       rel: 'preconnect',
       href: 'https://shop.app',
     },
-    {rel: 'icon', type: 'image/svg+xml', href: favicon},
+    { rel: 'icon', href: '//cdn.shopifycdn.net/s/files/1/0560/8688/8534/files/web_logo_32x32.png?v=1700807901' },
   ];
-}
-
-/**
- * @return {LoaderReturnData}
- */
-export const useRootLoaderData = () => {
-  const [root] = useMatches();
-  return root?.data;
 };
 
-/**
- * @param {LoaderFunctionArgs}
- */
-export async function loader({context}) {
-  const {storefront, session, cart} = context;
-  const customerAccessToken = await session.get('customerAccessToken');
-  const publicStoreDomain = context.env.PUBLIC_STORE_DOMAIN;
+export const meta = () => ({
+  charset: 'utf-8',
+  viewport: 'width=device-width,initial-scale=1',
+});
 
-  // validate the customer access token is valid
-  const {isLoggedIn, headers} = await validateCustomerAccessToken(
-    session,
-    customerAccessToken,
-  );
+export async function loader({ context }) {
+  const [cartId, layout] = await Promise.all([
+    context.session.get('cartId'),
+    getLayoutData(context),
+  ]);
 
-  // defer the cart query by not awaiting it
-  const cartPromise = cart.get();
-
-  // defer the footer query (below the fold)
-  const footerPromise = storefront.query(FOOTER_QUERY, {
-    cache: storefront.CacheLong(),
-    variables: {
-      footerMenuHandle: 'footer', // Adjust to your footer menu handle
+  return defer({
+    layout,
+    selectedLocale: context.storefront.i18n,
+    cart: cartId ? getCart(context, cartId) : undefined,
+    analytics: {
+      shopifySalesChannel: ShopifySalesChannel.hydrogen,
+      shopId: layout.shop.id,
     },
   });
-
-  // await the header query (above the fold)
-  const headerPromise = storefront.query(HEADER_QUERY, {
-    cache: storefront.CacheLong(),
-    variables: {
-      headerMenuHandle: 'main-menu', // Adjust to your header menu handle
-    },
-  });
-
-  return defer(
-    {
-      cart: cartPromise,
-      footer: footerPromise,
-      header: await headerPromise,
-      isLoggedIn,
-      publicStoreDomain,
-    },
-    {headers},
-  );
 }
 
 export default function App() {
-  const nonce = useNonce();
-  /** @type {LoaderReturnData} */
-  const data = useLoaderData();
 
+  const data = useLoaderData();
+  const locale = data.selectedLocale ?? DEFAULT_LOCALE;
+  const hasUserConsent = true;
+
+  useAnalytics(hasUserConsent, locale);
+
+  var canUseDOM = !!(typeof window !== "undefined" && typeof window.document !== "undefined" && typeof window.localStorage !== "undefined");
+  if (canUseDOM) {
+    if (getReferer() && getReferer().split('.com')[0].indexOf(window.location.host.split('.com')[0]) === -1 && (!localStorage.getItem('refererName') || (localStorage.getItem('refererName') && localStorage.getItem('refererName') !== getReferer()))) {
+      localStorage.setItem('refererName', getReferer())
+    }
+    useEffect(() => {
+      // Sentry.init({
+      //   dsn: "https://3a9a729470c367d1557919b68842f912@o4506097284677632.ingest.sentry.io/4506098198773760",
+      //   integrations: [
+      //     new Sentry.BrowserTracing({
+      //       // Set 'tracePropagationTargets' to control for which URLs distributed tracing should be enabled
+      //       tracePropagationTargets: ["localhost", /^https:\/\/page.homeromo.com\.io\/api/],
+      //     }),
+      //     new Sentry.Replay(),
+      //   ],
+      //   // Performance Monitoring
+      //   tracesSampleRate: 1.0, // Capture 100% of the transactions
+      //   // Session Replay
+      //   replaysSessionSampleRate: 0.1, // This sets the sample rate at 10%. You may want to change it to 100% while in development and then sample at a lower rate in production.
+      //   replaysOnErrorSampleRate: 1.0, // If you're not already sampling the entire session, change the sample rate to 100% when sampling sessions where errors occur.
+      // });
+
+      // (function (h, o, t, j, a, r) {
+      //   h.hj = h.hj || function () { (h.hj.q = h.hj.q || []).push(arguments) };
+      //   h._hjSettings = { hjid: 3719262, hjsv: 6 };
+      //   a = o.getElementsByTagName('head')[0];
+      //   r = o.createElement('script'); r.async = 1;
+      //   r.src = t + h._hjSettings.hjid + j + h._hjSettings.hjsv;
+      //   a.appendChild(r);
+      // })(window, document, 'https://static.hotjar.com/c/hotjar-', '.js?sv=');
+
+      // //   window.dataLayer = window.dataLayer || [];
+      // //   function gtag() { dataLayer.push(arguments); }
+      // //   gtag('js', new Date());
+      // //   gtag('config', 'G-X12GDSEKQ1');
+
+      // !function (f, b, e, v, n, t, s) {
+      //   if (f.fbq) return; n = f.fbq = function () {
+      //     n.callMethod ?
+      //       n.callMethod.apply(n, arguments) : n.queue.push(arguments)
+      //   };
+      //   if (!f._fbq) f._fbq = n; n.push = n; n.loaded = !0; n.version = '2.0';
+      //   n.queue = []; t = b.createElement(e); t.async = !0;
+      //   t.src = v; s = b.getElementsByTagName(e)[0];
+      //   s.parentNode.insertBefore(t, s)
+      // }(window, document, 'script',
+      //   'https://connect.facebook.net/en_US/fbevents.js');
+      // fbq('init', '292861753259331');
+      // fbq('track', 'PageView');
+
+      // !(function (c, b, d, a) {
+      //   c[a] || (c[a] = {}); c[a].config =
+      //   {
+      //     pid: "gr6w69wpuh@db34193c9e236f8",
+      //     appType: "web",
+      //     imgUrl: "https://arms-retcode.aliyuncs.com/r.png?",
+      //     sendResource: true,
+      //     enableLinkTrace: true,
+      //     behavior: true,
+      //     enableSPA: true,
+      //     useFmp: true,
+      //     enableConsole: true
+      //   };
+      //   let newScript = document.createElement("script")
+      //   newScript.src = d
+      //   newScript.setAttribute("crossorigin", "")
+      //   document.body.insertBefore(newScript, document.body.firstChild);
+      // })(window, document, "https://sdk.rum.aliyuncs.com/v1/bl.js", "__bl");
+    }, []);
+  }
   return (
-    <html lang="en">
+    <html lang={locale.language} style={{ direction: getDirection() }}>
       <head>
-        <meta charSet="utf-8" />
-        <meta name="viewport" content="width=device-width,initial-scale=1" />
+        <Seo />
         <Meta />
         <Links />
+        {/* <script async src="https://www.googletagmanager.com/gtag/js?id=G-X12GDSEKQ1"></script>
+        <noscript><img height="1" width="1" style={{ display: "none" }} src="https://www.facebook.com/tr?id=895173741588158&ev=PageView&noscript=1" /></noscript> */}
       </head>
       <body>
-        <Layout {...data}>
+        <Layout
+          layout={data.layout}
+          key={`${locale.language}-${locale.country}`}
+        >
           <Outlet />
         </Layout>
-        <ScrollRestoration nonce={nonce} />
-        <Scripts nonce={nonce} />
-        <LiveReload nonce={nonce} />
+        <ScrollRestoration />
+        <Scripts />
       </body>
     </html>
   );
 }
 
-export function ErrorBoundary() {
-  const error = useRouteError();
-  const rootData = useRootLoaderData();
-  const nonce = useNonce();
-  let errorMessage = 'Unknown error';
-  let errorStatus = 500;
-
-  if (isRouteErrorResponse(error)) {
-    errorMessage = error?.data?.message ?? error.data;
-    errorStatus = error.status;
-  } else if (error instanceof Error) {
-    errorMessage = error.message;
+function getReferer() {
+  if (document.referrer) {
+    return document.referrer;
+  } else {
+    return false;
   }
+}
+
+export function CatchBoundary() {
+  const [root] = useMatches();
+  const caught = useCatch();
+  const isNotFound = caught.status === 404;
+  const locale = root.data?.selectedLocale ?? DEFAULT_LOCALE;
 
   return (
-    <html lang="en">
+    <html lang={locale.language}>
       <head>
-        <meta charSet="utf-8" />
-        <meta name="viewport" content="width=device-width,initial-scale=1" />
+        <title>{isNotFound ? 'Not found' : 'Error'}</title>
         <Meta />
         <Links />
       </head>
       <body>
-        <Layout {...rootData}>
-          <div className="route-error">
-            <h1>Oops</h1>
-            <h2>{errorStatus}</h2>
-            {errorMessage && (
-              <fieldset>
-                <pre>{errorMessage}</pre>
-              </fieldset>
-            )}
-          </div>
+        <Layout
+          layout={root?.data?.layout}
+          key={`${locale.language}-${locale.country}`}
+        >
+          {isNotFound ? (
+            <NotFound type={caught.data?.pageType} />
+          ) : (
+            <GenericError
+              error={{ message: `${caught.status} ${caught.data}` }}
+            />
+          )}
         </Layout>
-        <ScrollRestoration nonce={nonce} />
-        <Scripts nonce={nonce} />
-        <LiveReload nonce={nonce} />
+        <Scripts />
       </body>
     </html>
   );
 }
 
-/**
- * Validates the customer access token and returns a boolean and headers
- * @see https://shopify.dev/docs/api/storefront/latest/objects/CustomerAccessToken
- *
- * @example
- * ```js
- * const {isLoggedIn, headers} = await validateCustomerAccessToken(
- *  customerAccessToken,
- *  session,
- * );
- * ```
- * @param {LoaderFunctionArgs['context']['session']} session
- * @param {CustomerAccessToken} [customerAccessToken]
- */
-async function validateCustomerAccessToken(session, customerAccessToken) {
-  let isLoggedIn = false;
-  const headers = new Headers();
-  if (!customerAccessToken?.accessToken || !customerAccessToken?.expiresAt) {
-    return {isLoggedIn, headers};
-  }
+export function ErrorBoundary({ error }) {
+  const [root] = useMatches();
+  const locale = root?.data?.selectedLocale ?? DEFAULT_LOCALE;
 
-  const expiresAt = new Date(customerAccessToken.expiresAt).getTime();
-  const dateNow = Date.now();
-  const customerAccessTokenExpired = expiresAt < dateNow;
-
-  if (customerAccessTokenExpired) {
-    session.unset('customerAccessToken');
-    headers.append('Set-Cookie', await session.commit());
-  } else {
-    isLoggedIn = true;
-  }
-
-  return {isLoggedIn, headers};
+  return (
+    <html lang={locale.language}>
+      <head>
+        <title>Error</title>
+        <Meta />
+        <Links />
+      </head>
+      <body>
+        <Layout layout={root?.data?.layout}>
+          <GenericError error={error} />
+        </Layout>
+        <Scripts />
+      </body>
+    </html>
+  );
 }
 
-const MENU_FRAGMENT = `#graphql
+const LAYOUT_QUERY = `#graphql
+  query layoutMenus(
+    $language: LanguageCode
+    $headerMenuHandle: String!
+    $footerMenuHandle: String!
+  ) @inContext(language: $language) {
+    shop {
+      id
+      name
+      description
+    }
+    headerMenu: menu(handle: $headerMenuHandle) {
+      id
+      items {
+        ...MenuItem
+        items {
+          ...MenuItem
+        }
+      }
+    }
+    footerMenu: menu(handle: $footerMenuHandle) {
+      id
+      items {
+        ...MenuItem
+        items {
+          ...MenuItem
+        }
+      }
+    }
+  }
   fragment MenuItem on MenuItem {
     id
     resourceId
@@ -215,68 +273,168 @@ const MENU_FRAGMENT = `#graphql
     type
     url
   }
-  fragment ChildMenuItem on MenuItem {
-    ...MenuItem
-  }
-  fragment ParentMenuItem on MenuItem {
-    ...MenuItem
-    items {
-      ...ChildMenuItem
-    }
-  }
-  fragment Menu on Menu {
-    id
-    items {
-      ...ParentMenuItem
-    }
-  }
 `;
 
-const HEADER_QUERY = `#graphql
-  fragment Shop on Shop {
-    id
-    name
-    description
-    primaryDomain {
-      url
+async function getLayoutData({ storefront }) {
+  const HEADER_MENU_HANDLE = 'main-menu';
+  const FOOTER_MENU_HANDLE = 'footer';
+
+  const data = await storefront.query(LAYOUT_QUERY, {
+    variables: {
+      headerMenuHandle: HEADER_MENU_HANDLE,
+      footerMenuHandle: FOOTER_MENU_HANDLE,
+      language: storefront.i18n.language,
+    },
+  });
+
+  invariant(data, 'No data returned from Shopify API');
+
+  /*
+        Modify specific links/routes (optional)
+        @see: https://shopify.dev/api/storefront/unstable/enums/MenuItemType
+        e.g here we map:
+          - /blogs/news -> /news
+          - /blog/news/blog-post -> /news/blog-post
+          - /collections/all -> /products
+      */
+  const customPrefixes = { BLOG: '', CATALOG: 'products' };
+
+  const headerMenu = data?.headerMenu
+    ? parseMenu(data.headerMenu, customPrefixes)
+    : undefined;
+
+  const footerMenu = data?.footerMenu
+    ? parseMenu(data.footerMenu, customPrefixes)
+    : undefined;
+
+  return { shop: data.shop, headerMenu, footerMenu };
+}
+
+const CART_QUERY = `#graphql
+  query CartQuery($cartId: ID!, $country: CountryCode, $language: LanguageCode)
+    @inContext(country: $country, language: $language) {
+    cart(id: $cartId) {
+      ...CartFragment
     }
-    brand {
-      logo {
-        image {
-          url
+  }
+
+  fragment CartFragment on Cart {
+    id
+    checkoutUrl
+    totalQuantity
+    buyerIdentity {
+      countryCode
+      customer {
+        id
+        email
+        firstName
+        lastName
+        displayName
+      }
+      email
+      phone
+    }
+    lines(first: 100) {
+      edges {
+        node {
+          id
+          quantity
+          attributes {
+            key
+            value
+          }
+          cost {
+            totalAmount {
+              amount
+              currencyCode
+            }
+            amountPerQuantity {
+              amount
+              currencyCode
+            }
+            compareAtAmountPerQuantity {
+              amount
+              currencyCode
+            }
+          }
+          merchandise {
+            ... on ProductVariant {
+              id
+              availableForSale
+              compareAtPrice {
+                ...MoneyFragment
+              }
+              price {
+                ...MoneyFragment
+              }
+              requiresShipping
+              title
+              image {
+                ...ImageFragment
+              }
+              product {
+                handle
+                title
+                id
+              }
+              selectedOptions {
+                name
+                value
+              }
+            }
+          }
         }
       }
     }
-  }
-  query Header(
-    $country: CountryCode
-    $headerMenuHandle: String!
-    $language: LanguageCode
-  ) @inContext(language: $language, country: $country) {
-    shop {
-      ...Shop
+    cost {
+      subtotalAmount {
+        ...MoneyFragment
+      }
+      totalAmount {
+        ...MoneyFragment
+      }
+      totalDutyAmount {
+        ...MoneyFragment
+      }
+      totalTaxAmount {
+        ...MoneyFragment
+      }
     }
-    menu(handle: $headerMenuHandle) {
-      ...Menu
+    note
+    attributes {
+      key
+      value
+    }
+    discountCodes {
+      code
     }
   }
-  ${MENU_FRAGMENT}
+
+  fragment MoneyFragment on MoneyV2 {
+    currencyCode
+    amount
+  }
+
+  fragment ImageFragment on Image {
+    id
+    url
+    altText
+    width
+    height
+  }
 `;
 
-const FOOTER_QUERY = `#graphql
-  query Footer(
-    $country: CountryCode
-    $footerMenuHandle: String!
-    $language: LanguageCode
-  ) @inContext(language: $language, country: $country) {
-    menu(handle: $footerMenuHandle) {
-      ...Menu
-    }
-  }
-  ${MENU_FRAGMENT}
-`;
+export async function getCart({ storefront }, cartId) {
+  invariant(storefront, 'missing storefront client in cart query');
 
-/** @typedef {import('@shopify/remix-oxygen').LoaderFunctionArgs} LoaderFunctionArgs */
-/** @typedef {import('@remix-run/react').ShouldRevalidateFunction} ShouldRevalidateFunction */
-/** @typedef {import('@shopify/hydrogen/storefront-api-types').CustomerAccessToken} CustomerAccessToken */
-/** @typedef {import('@shopify/remix-oxygen').SerializeFrom<typeof loader>} LoaderReturnData */
+  const { cart } = await storefront.query(CART_QUERY, {
+    variables: {
+      cartId,
+      country: storefront.i18n.country,
+      language: storefront.i18n.language,
+    },
+    cache: storefront.CacheNone(),
+  });
+
+  return cart;
+}
